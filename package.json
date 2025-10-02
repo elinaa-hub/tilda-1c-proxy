@@ -1,0 +1,8 @@
+{
+  "name": "tilda-1c-proxy",
+  "version": "1.0.0",
+  "main": "api/lead.js",
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
