@@ -1,73 +1,78 @@
-// api/lead.js
-export default async function handler(req, res) {
+// package.json: { "type": "module" }
+
+import { Buffer } from 'buffer';
+
+const WEBHOOK_URL = 'https://app597875.1capp.net/1SUpravleniye-nashey-firmoy-8/hs/landing_webhook/lead/v1';
+const USERNAME = 'Landing_tilda_connect';        // ← замените на реальный логин
+const PASSWORD = 'e1uoijdBak3LdRwb4JYq'; // ← замените на реальный пароль
+
+// Опционально: если используется X-Api-Key
+// const API_KEY = 'ваш_секретный_ключ';
+
+export default async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Only POST allowed' });
   }
 
-  const body = req.body;
-
-  // Извлекаем поля из Tilda
-  const childFullName = (body.name || '').trim();
-  const childBirthDate = body.childBirthDate || '2010-01-01';
-  const childGender = (body.childGender || 'M').toUpperCase();
-  const parentFullName = (body.parentName || '').trim();
-  const parentPhone = body.phone || '';
-  const parentEmail = body.email || '';
-
-  // Проверка обязательных полей
-  if (!childFullName || !parentFullName || !parentPhone || !childBirthDate) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  // Генерируем Idempotency-Key
-  const idempotencyKey = `${parentPhone}-${childBirthDate}-${Date.now()}`;
-
-  // Формируем payload для 1С
-  const payload = {
-    packageHeader: {
-      exchangePlan: "LandingLead",
-      from: "landing-tilda",
-      to: "1C-UNF"
-    },
-    lead: {
-      childFullName,
-      childGender: ['M', 'F'].includes(childGender) ? childGender : 'M',
-      childBirthDate,
-      parentFullName,
-      parentPhone,
-      parentEmail,
-      landingPageAddress: "https://heroes.aricamp.ru/",
-      createdAt: new Date().toISOString()
-    }
-  };
-
-  // Basic Auth
-  const login = 'Landing_tilda_connect';
-  const password = 'e1uoijdBak3LdRwb4JYq';
-  const auth = Buffer.from(`${login}:${password}`).toString('base64');
-
   try {
-    const response = await fetch('https://app597875.1capp.net/1SUpravleniye-nashey-firmoy-8/hs/landing_webhook/lead/v1', {
+    const body = await req.json();
+
+    // Проверка: Tilda может присылать данные в виде полей формы, а не JSON
+    // Если вы используете "Отправлять как JSON" в Tilda — ок.
+    // Иначе нужно парсить URL-encoded данные.
+
+    const leadData = {
+      packageHeader: {
+        exchangePlan: "LandingLead",
+        from: "landing-tilda",
+        to: "1C-UNF"
+      },
+      lead: {
+        childFullName: body.childFullName?.trim(),
+        childGender: body.childGender?.toUpperCase(),
+        childBirthDate: body.childBirthDate,
+        parentFullName: body.parentFullName?.trim(),
+        parentPhone: body.parentPhone?.replace(/\D/g, ''), // оставить только цифры
+        parentEmail: body.parentEmail?.trim(),
+        landingPageAddress: "https://heroes.aricamp.ru/",
+        createdAt: new Date().toISOString()
+      }
+    };
+
+    // Валидация (минимальная)
+    if (!leadData.lead.childFullName || !leadData.lead.parentFullName || !leadData.lead.parentPhone) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Нормализуем телефон под +7XXXXXXXXXX
+    let phone = leadData.lead.parentPhone;
+    if (phone.startsWith('8')) phone = '7' + phone.slice(1);
+    if (!phone.startsWith('7')) phone = '7' + phone;
+    leadData.lead.parentPhone = '+' + phone;
+
+    const auth = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
+
+    const response = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         'Authorization': `Basic ${auth}`,
-        'Idempotency-Key': idempotencyKey
+        // 'X-Api-Key': API_KEY, // раскомментировать, если нужен
+        'Idempotency-Key': crypto.randomUUID(), // защита от дублей
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(leadData),
     });
 
     const result = await response.json();
+    console.log('1C response:', result);
 
-    if (response.ok && result.success) {
-      console.log('✅ Успешно отправлено в 1С:', result.data?.leadId);
-      return res.status(200).json({ status: 'ok' });
+    if (response.ok) {
+      res.status(200).json({ success: true, data: result.data });
     } else {
-      console.error('❌ Ошибка 1С:', result.error?.message || 'Unknown');
-      return res.status(400).json({ error: result.error?.message || '1C rejected request' });
+      res.status(response.status).json({ error: result.error?.message || '1C error' });
     }
   } catch (err) {
-    console.error('💥 Ошибка сети:', err.message);
-    return res.status(500).json({ error: 'Failed to reach 1C' });
+    console.error('Proxy error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-}
+};
